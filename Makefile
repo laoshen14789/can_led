@@ -71,8 +71,8 @@ Middlewares/Third_Party/FreeRTOS/Source/timers.c \
 Middlewares/Third_Party/FreeRTOS/Source/CMSIS_RTOS_V2/cmsis_os2.c \
 Middlewares/Third_Party/FreeRTOS/Source/portable/MemMang/heap_4.c \
 Middlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM3/port.c \
-Drivers/libcanard/canard.c \
-Drivers/libcanard/drivers/stm32/canard_stm32.c
+libcanard/canard.c \
+libcanard/drivers/stm32/canard_stm32.c
 
 # ASM sources
 ASM_SOURCES =  \
@@ -138,8 +138,8 @@ C_INCLUDES =  \
 -IMiddlewares/Third_Party/FreeRTOS/Source/portable/GCC/ARM_CM3 \
 -IDrivers/CMSIS/Device/ST/STM32F1xx/Include \
 -IDrivers/CMSIS/Include \
--IDrivers/libcanard \
--IDrivers/libcanard/drivers/stm32
+-Ilibcanard \
+-Ilibcanard/drivers/stm32
 
 
 # compile gcc flags
