@@ -117,7 +117,7 @@ uint32_t Get_sys_time_ms(void)
 
 uint32_t Get_sys_time_us(void)
 {
-  uint32_t sys_us = 1000*HAL_GetTick()+TIM2->CNT;
+  uint32_t sys_us = 1000*HAL_GetTick()+TIM4->CNT;
   return sys_us;
 }
 
