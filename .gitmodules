@@ -5,3 +5,9 @@
 [submodule "dsdl"]
 	path = dsdl
 	url = git@github.com:dronecan/dronecan_dsdlc.git
+[submodule "DSDL_C"]
+	path = DSDL_C
+	url = git@github.com:dronecan/DSDL.git
+[submodule "pydronecan"]
+	path = pydronecan
+	url = git@github.com:dronecan/pydronecan.git
