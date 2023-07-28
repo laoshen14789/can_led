@@ -317,6 +317,22 @@ static void handle_param_ExecuteOpcode(CanardInstance* ins, CanardRxTransfer* tr
 }
 
 /*
+  handle a servo ArrayCommand request
+*/
+static void handle_ArrayCommand(CanardInstance *ins, CanardRxTransfer *transfer)
+{
+    struct uavcan_equipment_indication_RGB565 cmd;
+    if (uavcan_equipment_actuator_ArrayCommand_decode(transfer, &cmd)) {
+        return;
+    }
+    uint64_t tnow = micros64();
+    cmd.red;
+    cmd.green;
+    cmd.blue;
+
+}
+
+/*
  This callback is invoked by the library when a new message or request or response is received.
 */
 static void onTransferReceived(CanardInstance *ins, CanardRxTransfer *transfer)
