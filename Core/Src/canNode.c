@@ -35,6 +35,7 @@
 // dronecan_dsdlc compiler
 #include <dronecan_msgs.h>
 
+#include "gpio.h"
 /*
   libcanard library instance and a memory pool for it to use
  */
@@ -60,9 +61,11 @@ static struct parameter {
     float max_value;
 } parameters[] = {
     { "CAN_NODE", UAVCAN_PROTOCOL_PARAM_VALUE_INTEGER_VALUE, MY_NODE_ID, 0, 127 },
-    { "MyPID_P", UAVCAN_PROTOCOL_PARAM_VALUE_REAL_VALUE, 1.2, 0.1, 5.0 },
-    { "MyPID_I", UAVCAN_PROTOCOL_PARAM_VALUE_REAL_VALUE, 1.35, 0.1, 5.0 },
-    { "MyPID_D", UAVCAN_PROTOCOL_PARAM_VALUE_REAL_VALUE, 0.025, 0.001, 1.0 },
+    { "STATUS_LED_SWITCH", UAVCAN_PROTOCOL_PARAM_VALUE_BOOLEAN_VALUE, 1, 0, 1 },
+    { "LED1_SWITCH", UAVCAN_PROTOCOL_PARAM_VALUE_INTEGER_VALUE, 1, 0, 2 },
+    { "LED2_SWITCH", UAVCAN_PROTOCOL_PARAM_VALUE_INTEGER_VALUE, 1, 0, 2 },
+    { "LED3_SWITCH", UAVCAN_PROTOCOL_PARAM_VALUE_INTEGER_VALUE, 1, 0, 2 },
+    { "LED4_SWITCH", UAVCAN_PROTOCOL_PARAM_VALUE_INTEGER_VALUE, 1, 0, 2 },
 };
 
 /*
@@ -218,8 +221,8 @@ static void handle_param_GetSet(CanardInstance* ins, CanardRxTransfer* transfer)
         case UAVCAN_PROTOCOL_PARAM_VALUE_INTEGER_VALUE:
             p->value = req.value.integer_value;
             break;
-        case UAVCAN_PROTOCOL_PARAM_VALUE_REAL_VALUE:
-            p->value = req.value.real_value;
+        case UAVCAN_PROTOCOL_PARAM_VALUE_BOOLEAN_VALUE:
+            p->value = req.value.boolean_value;
             break;
         default:
             return;
@@ -238,8 +241,8 @@ static void handle_param_GetSet(CanardInstance* ins, CanardRxTransfer* transfer)
         case UAVCAN_PROTOCOL_PARAM_VALUE_INTEGER_VALUE:
             pkt.value.integer_value = p->value;
             break;
-        case UAVCAN_PROTOCOL_PARAM_VALUE_REAL_VALUE:
-            pkt.value.real_value = p->value;
+        case UAVCAN_PROTOCOL_PARAM_VALUE_BOOLEAN_VALUE:
+            pkt.value.boolean_value = p->value;
             break;
         default:
             return;
@@ -248,6 +251,22 @@ static void handle_param_GetSet(CanardInstance* ins, CanardRxTransfer* transfer)
         strcpy((char *)pkt.name.data, p->name);
     }
 
+    if(parameters[1].value == 1)
+    {
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET);
+    }
+    else
+    {
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_SET);
+    }
+    // if(parameters[2].value == 1)
+    // {
+    //     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_SET);
+    // }
+    // else
+    // {
+    //     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET);
+    // }
     uint8_t buffer[UAVCAN_PROTOCOL_PARAM_GETSET_RESPONSE_MAX_SIZE];
     uint16_t total_size = uavcan_protocol_param_GetSetResponse_encode(&pkt, buffer);
 
