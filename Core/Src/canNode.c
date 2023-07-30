@@ -34,20 +34,31 @@
 // include the headers for the generated DroneCAN messages from the
 // dronecan_dsdlc compiler
 #include <dronecan_msgs.h>
+#include "flash.h"
+#include "canNode.h"
 
-#include "gpio.h"
+typedef enum
+{
+    CAN_NODE_ID_ITEM,
+    STATUS_LED_SWITCH_ITEM,
+    LED_SWITCH_ITEM,
+    NAV_LED_COLOLR_ITEM,
+}NODE_PARAM_ITEM;
+
 /*
   libcanard library instance and a memory pool for it to use
  */
 static CanardInstance canard;
 static uint8_t memory_pool[1024];
+static DataToSave userData_g = {0};
+static int armStatus_g = 0;
 
 /*
   in this simple example we will use a fixed CAN node ID. This would
   need to be a parameter or use dynamic node allocation in a real
   application
  */
-#define MY_NODE_ID 97
+#define PREFERRED_NODE_ID 97
 // some convenience macros
 #define MIN(a,b) ((a)<(b)?(a):(b))
 #define C_TO_KELVIN(temp) (temp + 273.15f)
@@ -60,13 +71,18 @@ static struct parameter {
     float min_value;
     float max_value;
 } parameters[] = {
-    { "CAN_NODE", UAVCAN_PROTOCOL_PARAM_VALUE_INTEGER_VALUE, MY_NODE_ID, 0, 127 },
+    { "CAN_NODE", UAVCAN_PROTOCOL_PARAM_VALUE_INTEGER_VALUE, PREFERRED_NODE_ID, 0, 127 },
     { "STATUS_LED_SWITCH", UAVCAN_PROTOCOL_PARAM_VALUE_BOOLEAN_VALUE, 1, 0, 1 },
-    { "LED1_SWITCH", UAVCAN_PROTOCOL_PARAM_VALUE_INTEGER_VALUE, 1, 0, 2 },
-    { "LED2_SWITCH", UAVCAN_PROTOCOL_PARAM_VALUE_INTEGER_VALUE, 1, 0, 2 },
-    { "LED3_SWITCH", UAVCAN_PROTOCOL_PARAM_VALUE_INTEGER_VALUE, 1, 0, 2 },
-    { "LED4_SWITCH", UAVCAN_PROTOCOL_PARAM_VALUE_INTEGER_VALUE, 1, 0, 2 },
+    { "LED_SWITCH", UAVCAN_PROTOCOL_PARAM_VALUE_BOOLEAN_VALUE, 1, 0, 2 },
+    { "NAV_LED_COLOLR", UAVCAN_PROTOCOL_PARAM_VALUE_INTEGER_VALUE, 0, 0, 10 },
 };
+
+led_set_rgb_callback led_set_rgb_fun;
+led_pwm_switch pwm_switch_fun;
+set_status_led_switch status_led_ctr_fun;
+
+void set_arm_status(int value);
+int get_arm_status();
 
 /*
   hold our node status as a static variable. It will be updated on any errors
@@ -131,6 +147,14 @@ uint32_t Get_sys_time_us(void)
 static uint64_t micros64(void)
 {
     return Get_sys_time_us();
+}
+
+/*
+  get monotonic time in milliseconds since startup
+ */
+static uint32_t millis32(void)
+{
+    return micros64() / 1000ULL;
 }
 
 /*
@@ -251,22 +275,9 @@ static void handle_param_GetSet(CanardInstance* ins, CanardRxTransfer* transfer)
         strcpy((char *)pkt.name.data, p->name);
     }
 
-    if(parameters[1].value == 1)
-    {
-        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET);
-    }
-    else
-    {
-        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_SET);
-    }
-    // if(parameters[2].value == 1)
-    // {
-    //     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_SET);
-    // }
-    // else
-    // {
-    //     HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, GPIO_PIN_RESET);
-    // }
+    status_led_ctr_fun((int)parameters[STATUS_LED_SWITCH_ITEM].value);
+    pwm_switch_fun((int)parameters[LED_SWITCH_ITEM].value);
+
     uint8_t buffer[UAVCAN_PROTOCOL_PARAM_GETSET_RESPONSE_MAX_SIZE];
     uint16_t total_size = uavcan_protocol_param_GetSetResponse_encode(&pkt, buffer);
 
@@ -292,8 +303,24 @@ static void handle_param_ExecuteOpcode(CanardInstance* ins, CanardRxTransfer* tr
     }
     if (req.opcode == UAVCAN_PROTOCOL_PARAM_EXECUTEOPCODE_REQUEST_OPCODE_ERASE) {
         // here is where you would reset all parameters to defaults
+        userData_g.canNodeId = (int)PREFERRED_NODE_ID;
+        userData_g.statusLedSwitch = (int)1;
+        userData_g.ledSwitch = (int)1;
+        userData_g.navLedColor = (int)1;
+        parameters[CAN_NODE_ID_ITEM].value = (int)PREFERRED_NODE_ID;
+        parameters[STATUS_LED_SWITCH_ITEM].value = (int)1;
+        parameters[LED_SWITCH_ITEM].value = (int)1;
+        parameters[NAV_LED_COLOLR_ITEM].value = (int)1;
+        user_data_write(&userData_g);
+        user_data_save();
     }
     if (req.opcode == UAVCAN_PROTOCOL_PARAM_EXECUTEOPCODE_REQUEST_OPCODE_SAVE) {
+        userData_g.canNodeId = (int)parameters[CAN_NODE_ID_ITEM].value;
+        userData_g.statusLedSwitch = (int)parameters[STATUS_LED_SWITCH_ITEM].value;
+        userData_g.ledSwitch = (int)parameters[LED_SWITCH_ITEM].value;
+        userData_g.navLedColor = (int)parameters[NAV_LED_COLOLR_ITEM].value;
+        user_data_write(&userData_g);
+        user_data_save();
         // here is where you would save all the changed parameters to permanent storage
     }
 
@@ -316,20 +343,200 @@ static void handle_param_ExecuteOpcode(CanardInstance* ins, CanardRxTransfer* tr
                            total_size);
 }
 
-/*
-  handle a servo ArrayCommand request
-*/
-static void handle_ArrayCommand(CanardInstance *ins, CanardRxTransfer *transfer)
+
+static void handle_RGB565(CanardInstance *ins, CanardRxTransfer *transfer)
 {
-    struct uavcan_equipment_indication_RGB565 cmd;
-    if (uavcan_equipment_actuator_ArrayCommand_decode(transfer, &cmd)) {
+    ledStatus_s led;
+    struct uavcan_equipment_indication_LightsCommand cmd;
+    if (uavcan_equipment_indication_LightsCommand_decode(transfer, &cmd)) {
         return;
     }
-    uint64_t tnow = micros64();
-    cmd.red;
-    cmd.green;
-    cmd.blue;
+    if(get_arm_status() == 0)
+    {
+        return;
+    }
+    // uint64_t tnow = micros64();
+    for (uint8_t i=0; i < cmd.commands.len; i++) {
+        if (cmd.commands.data[i].light_id >= 4) {
+            // not for us
+            continue;
+        }
+        led.ledNum = cmd.commands.data[i].light_id;
+        led.ledColor.red = cmd.commands.data[i].color.red;
+        led.ledColor.green = cmd.commands.data[i].color.green;
+        led.ledColor.blue = cmd.commands.data[i].color.blue;
 
+        if(led_set_rgb_fun != NULL)
+        {
+            led_set_rgb_fun(&led);
+        }
+
+    }
+}
+
+static void handle_get_arm_status(CanardInstance *ins, CanardRxTransfer *transfer)
+{
+    ledStatus_s led;
+    struct uavcan_equipment_safety_ArmingStatus cmd;
+    if (uavcan_equipment_safety_ArmingStatus_decode(transfer, &cmd)) {
+        return;
+    }
+    
+    if(cmd.status != 0)
+    {
+        set_arm_status(0);
+        led.ledNum = 0;
+        if(parameters[NAV_LED_COLOLR_ITEM].value == 0)
+        {
+            led.ledColor.red = 0;
+            led.ledColor.green = 0;
+            led.ledColor.blue = 0;
+            led_set_rgb_fun(&led);
+        }
+        else if(parameters[NAV_LED_COLOLR_ITEM].value == 1)
+        {
+            led.ledColor.red = 25;
+            led.ledColor.green = 0;
+            led.ledColor.blue = 0;
+            led_set_rgb_fun(&led);
+        }
+        else if(parameters[NAV_LED_COLOLR_ITEM].value == 2)
+        {
+            led.ledColor.red = 0;
+            led.ledColor.green = 35;
+            led.ledColor.blue = 0;
+            led_set_rgb_fun(&led);
+        }
+        else if(parameters[NAV_LED_COLOLR_ITEM].value == 3)
+        {
+            led.ledColor.red = 0;
+            led.ledColor.green = 0;
+            led.ledColor.blue = 25;
+            led_set_rgb_fun(&led);
+        }
+        else if(parameters[NAV_LED_COLOLR_ITEM].value == 4)
+        {
+            led.ledColor.red = 25;
+            led.ledColor.green = 35;
+            led.ledColor.blue = 5;
+            led_set_rgb_fun(&led);
+        }
+    }
+    else
+    {
+        set_arm_status(1);
+    }
+
+}
+/*
+  data for dynamic node allocation process
+ */
+static struct {
+    uint32_t send_next_node_id_allocation_request_at_ms;
+    uint32_t node_id_allocation_unique_id_offset;
+} DNA;
+
+/*
+  handle a DNA allocation packet
+ */
+static void handle_DNA_Allocation(CanardInstance *ins, CanardRxTransfer *transfer)
+{
+    if (canardGetLocalNodeID(&canard) != CANARD_BROADCAST_NODE_ID) {
+        // already allocated
+        return;
+    }
+
+    // Rule C - updating the randomized time interval
+    DNA.send_next_node_id_allocation_request_at_ms =
+        millis32() + UAVCAN_PROTOCOL_DYNAMIC_NODE_ID_ALLOCATION_MIN_REQUEST_PERIOD_MS +
+        (random() % UAVCAN_PROTOCOL_DYNAMIC_NODE_ID_ALLOCATION_MAX_FOLLOWUP_DELAY_MS);
+
+    if (transfer->source_node_id == CANARD_BROADCAST_NODE_ID) {
+        printf("Allocation request from another allocatee\n");
+        DNA.node_id_allocation_unique_id_offset = 0;
+        return;
+    }
+
+    // Copying the unique ID from the message
+    struct uavcan_protocol_dynamic_node_id_Allocation msg;
+
+    uavcan_protocol_dynamic_node_id_Allocation_decode(transfer, &msg);
+
+    // Obtaining the local unique ID
+    uint8_t my_unique_id[sizeof(msg.unique_id.data)];
+    getUniqueID(my_unique_id);
+
+    // Matching the received UID against the local one
+    if (memcmp(msg.unique_id.data, my_unique_id, msg.unique_id.len) != 0) {
+        printf("Mismatching allocation response\n");
+        DNA.node_id_allocation_unique_id_offset = 0;
+        // No match, return
+        return;
+    }
+
+    if (msg.unique_id.len < sizeof(msg.unique_id.data)) {
+        // The allocator has confirmed part of unique ID, switching to
+        // the next stage and updating the timeout.
+        DNA.node_id_allocation_unique_id_offset = msg.unique_id.len;
+        DNA.send_next_node_id_allocation_request_at_ms -= UAVCAN_PROTOCOL_DYNAMIC_NODE_ID_ALLOCATION_MIN_REQUEST_PERIOD_MS;
+
+        printf("Matching allocation response: %d\n", msg.unique_id.len);
+    } else {
+        // Allocation complete - copying the allocated node ID from the message
+        canardSetLocalNodeID(ins, msg.node_id);
+        printf("Node ID allocated: %d\n", msg.node_id);
+        parameters[CAN_NODE_ID_ITEM].value = msg.node_id;
+        userData_g.canNodeId = parameters[CAN_NODE_ID_ITEM].value;
+    }
+}
+
+/*
+  ask for a dynamic node allocation
+ */
+static void request_DNA()
+{
+    const uint32_t now = millis32();
+    static uint8_t node_id_allocation_transfer_id = 0;
+
+    DNA.send_next_node_id_allocation_request_at_ms =
+        now + UAVCAN_PROTOCOL_DYNAMIC_NODE_ID_ALLOCATION_MIN_REQUEST_PERIOD_MS +
+        (random() % UAVCAN_PROTOCOL_DYNAMIC_NODE_ID_ALLOCATION_MAX_FOLLOWUP_DELAY_MS);
+
+    // Structure of the request is documented in the DSDL definition
+    // See http://uavcan.org/Specification/6._Application_level_functions/#dynamic-node-id-allocation
+    uint8_t allocation_request[CANARD_CAN_FRAME_MAX_DATA_LEN - 1];
+    allocation_request[0] = (uint8_t)(PREFERRED_NODE_ID << 1U);
+
+    if (DNA.node_id_allocation_unique_id_offset == 0) {
+        allocation_request[0] |= 1;     // First part of unique ID
+    }
+
+    uint8_t my_unique_id[16];
+    getUniqueID(my_unique_id);
+
+    static const uint8_t MaxLenOfUniqueIDInRequest = 6;
+    uint8_t uid_size = (uint8_t)(16 - DNA.node_id_allocation_unique_id_offset);
+    
+    if (uid_size > MaxLenOfUniqueIDInRequest) {
+        uid_size = MaxLenOfUniqueIDInRequest;
+    }
+
+    memmove(&allocation_request[1], &my_unique_id[DNA.node_id_allocation_unique_id_offset], uid_size);
+
+    // Broadcasting the request
+    const int16_t bcast_res = canardBroadcast(&canard,
+                                              UAVCAN_PROTOCOL_DYNAMIC_NODE_ID_ALLOCATION_SIGNATURE,
+                                              UAVCAN_PROTOCOL_DYNAMIC_NODE_ID_ALLOCATION_ID,
+                                              &node_id_allocation_transfer_id,
+                                              CANARD_TRANSFER_PRIORITY_LOW,
+                                              &allocation_request[0],
+                                              (uint16_t) (uid_size + 1));
+    if (bcast_res < 0) {
+        printf("Could not broadcast ID allocation req; error %d\n", bcast_res);
+    }
+
+    // Preparing for timeout; if response is received, this value will be updated from the callback.
+    DNA.node_id_allocation_unique_id_offset = 0;
 }
 
 /*
@@ -351,6 +558,23 @@ static void onTransferReceived(CanardInstance *ins, CanardRxTransfer *transfer)
         }
         case UAVCAN_PROTOCOL_PARAM_EXECUTEOPCODE_ID: {
             handle_param_ExecuteOpcode(ins, transfer);
+            break;
+        }
+        }
+    }
+    if (transfer->transfer_type == CanardTransferTypeBroadcast) {
+        // check if we want to handle a specific broadcast message
+        switch (transfer->data_type_id) {
+        case UAVCAN_EQUIPMENT_INDICATION_LIGHTSCOMMAND_ID: {
+            handle_RGB565(ins, transfer);
+            break;
+        }
+        case UAVCAN_PROTOCOL_DYNAMIC_NODE_ID_ALLOCATION_ID: {
+            handle_DNA_Allocation(ins, transfer);
+            break;
+        }
+        case UAVCAN_EQUIPMENT_SAFETY_ARMINGSTATUS_ID: {
+            handle_get_arm_status(ins, transfer);
             break;
         }
         }
@@ -386,6 +610,23 @@ static bool shouldAcceptTransfer(const CanardInstance *ins,
         }
         case UAVCAN_PROTOCOL_PARAM_EXECUTEOPCODE_ID: {
             *out_data_type_signature = UAVCAN_PROTOCOL_PARAM_EXECUTEOPCODE_SIGNATURE;
+            return true;
+        }
+        }
+    }
+    if (transfer_type == CanardTransferTypeBroadcast) {
+        // see if we want to handle a specific broadcast packet
+        switch (data_type_id) {
+        case UAVCAN_EQUIPMENT_INDICATION_LIGHTSCOMMAND_ID: {
+            *out_data_type_signature = UAVCAN_EQUIPMENT_INDICATION_LIGHTSCOMMAND_SIGNATURE;
+            return true;
+        }
+        case UAVCAN_PROTOCOL_DYNAMIC_NODE_ID_ALLOCATION_ID: {
+            *out_data_type_signature = UAVCAN_PROTOCOL_DYNAMIC_NODE_ID_ALLOCATION_SIGNATURE;
+            return true;
+        }
+        case UAVCAN_EQUIPMENT_SAFETY_ARMINGSTATUS_ID: {
+            *out_data_type_signature = UAVCAN_EQUIPMENT_SAFETY_ARMINGSTATUS_SIGNATURE;
             return true;
         }
         }
@@ -488,6 +729,14 @@ int init_can_node()
     CANTiming.bit_segment_1 = 5;
     CANTiming.bit_segment_2 = 2;
     CANTiming.max_resynchronization_jump_width = 1;
+
+    memset(&userData_g, 0, sizeof(DataToSave));
+    user_data_read(&userData_g);
+    parameters[STATUS_LED_SWITCH_ITEM].value = userData_g.statusLedSwitch;
+    parameters[LED_SWITCH_ITEM].value = userData_g.ledSwitch;
+    parameters[NAV_LED_COLOLR_ITEM].value = userData_g.navLedColor;
+    parameters[CAN_NODE_ID_ITEM].value = userData_g.canNodeId;
+
     /*
      * Initializing the CAN backend driver; in this example we're using SocketCAN
      */
@@ -508,8 +757,15 @@ int init_can_node()
                shouldAcceptTransfer,
                NULL);
 
-    canardSetLocalNodeID(&canard, MY_NODE_ID);
+    // canardSetLocalNodeID(&canard, PREFERRED_NODE_ID);
 
+    if (parameters[CAN_NODE_ID_ITEM].value <= 1 || parameters[CAN_NODE_ID_ITEM].value >= 127) {
+        printf("Node ID error\n");
+    } else {
+        canardSetLocalNodeID(&canard, (uint8_t)parameters[CAN_NODE_ID_ITEM].value);
+    }
+
+    pwm_switch_fun(1);
     /*
       Run the main loop.
      */
@@ -519,6 +775,20 @@ int init_can_node()
         processTxRxOnce(10);
 
         const uint64_t ts = micros64();
+        if (parameters[CAN_NODE_ID_ITEM].value <= 1 || parameters[CAN_NODE_ID_ITEM].value >= 127) {
+            if (canardGetLocalNodeID(&canard) == CANARD_BROADCAST_NODE_ID) {
+                // waiting for DNA
+            }
+
+            // see if we are still doing DNA
+            if (canardGetLocalNodeID(&canard) == CANARD_BROADCAST_NODE_ID) {
+                // we're still waiting for a DNA allocation of our node ID
+                if (millis32() > DNA.send_next_node_id_allocation_request_at_ms) {
+                    request_DNA();
+                }
+                continue;
+            }
+        }
 
         if (ts >= next_1hz_service_at) {
             next_1hz_service_at += 1000000ULL;
@@ -527,4 +797,29 @@ int init_can_node()
     }
 
     return 0;
+}
+
+void set_arm_status(int value)
+{
+    armStatus_g = value;
+}
+
+int get_arm_status()
+{
+    return armStatus_g;
+}
+
+void register_set_led_rgb_callback(led_set_rgb_callback led)
+{
+    led_set_rgb_fun = led;
+}
+
+void register_pwm_switch_callback(led_pwm_switch callback)
+{
+    pwm_switch_fun = callback;
+}
+
+void register_set_status_led_switch_callback(set_status_led_switch callback)
+{
+    status_led_ctr_fun = callback;
 }

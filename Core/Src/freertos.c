@@ -26,6 +26,9 @@
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "canNode.h"
+#include <string.h>
+#include "tim.h"
+#include "flash.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -45,7 +48,7 @@
 
 /* Private variables ---------------------------------------------------------*/
 /* USER CODE BEGIN Variables */
-
+ledStatus_s ledStatus_g = {0};
 /* USER CODE END Variables */
 /* Definitions for defaultTask */
 osThreadId_t defaultTaskHandle;
@@ -57,7 +60,9 @@ const osThreadAttr_t defaultTask_attributes = {
 
 /* Private function prototypes -----------------------------------------------*/
 /* USER CODE BEGIN FunctionPrototypes */
-
+void led_status_change_handle(ledStatus_s *status);
+void pwm_switch_handle(int value);
+void status_led_switch_handle(int value);
 /* USER CODE END FunctionPrototypes */
 
 void StartDefaultTask(void *argument);
@@ -114,6 +119,10 @@ void MX_FREERTOS_Init(void) {
 void StartDefaultTask(void *argument)
 {
   /* USER CODE BEGIN StartDefaultTask */
+    register_set_led_rgb_callback(led_status_change_handle);
+    register_pwm_switch_callback(pwm_switch_handle);
+    register_set_status_led_switch_callback(status_led_switch_handle);
+    user_data_init();
     init_can_node();
   /* Infinite loop */
   for(;;)
@@ -126,7 +135,52 @@ void StartDefaultTask(void *argument)
 /* Private application code --------------------------------------------------*/
 /* USER CODE BEGIN Application */
 
+void led_status_change_handle(ledStatus_s *status)
+{
+    // memcpy(&ledStatus_g, status, sizeof(ledStatus_s));
+    // osSemaphoreRelease(ledSemHandle);
+    switch (status->ledNum)
+    {
+    case 0:
+        __HAL_TIM_SetCompare(&htim2, TIM_CHANNEL_1, status->ledColor.green * 2);
+        __HAL_TIM_SetCompare(&htim2, TIM_CHANNEL_2, status->ledColor.red * 7);
+        __HAL_TIM_SetCompare(&htim2, TIM_CHANNEL_3, status->ledColor.blue * 7);
+        break;
+    case 1:
+        // map PWM to -1 to 1, assuming 1500 trim. If the servo has natural PWM
+        // support then we should use it directly instead
 
+        break;
+    }
+}
+
+void pwm_switch_handle(int value)
+{
+    if(value == 1)
+    {
+        HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_1);
+        HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_2);
+        HAL_TIM_PWM_Start(&htim2, TIM_CHANNEL_3);
+    }
+    else
+    {
+        HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_1);
+        HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_2);
+        HAL_TIM_PWM_Stop(&htim2, TIM_CHANNEL_3);
+    }
+}
+
+void status_led_switch_handle(int value)
+{
+    if(value == 1)
+    {
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, RESET);
+    }
+    else
+    {
+        HAL_GPIO_WritePin(GPIOA, GPIO_PIN_4, SET);
+    }
+}
 
 /* USER CODE END Application */
 
